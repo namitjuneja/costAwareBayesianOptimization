@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import torch
 import gpytorch
@@ -9,51 +10,55 @@ from gpytorch.likelihoods import GaussianLikelihood
 from gpytorch.kernels import MaternKernel, ScaleKernel
 from botorch.models.transforms.outcome import Standardize
 from botorch import fit_gpytorch_model
-from botorch.acquisition.monte_carlo import qExpectedImprovement
+from botorch.acquisition import ExpectedImprovement
 from botorch.optim import optimize_acqf
 
+from helper_functions.artificial_functions import ack, cost
+from helper_functions.utils import *
+
+
 torch.set_default_dtype(torch.float64) # avoid matrix not positive semi-definite
+    
 
-# ackley function (black box function to be optimized)
-def ack(x, y):
-    x = x/10
-    y = y/10
-    return -20.0 * np.exp(-0.2 * np.sqrt(0.5 * (x**2 + y**2)))-np.exp(0.5 * (np.cos(2 * 
-      np.pi * x)+np.cos(2 * np.pi * y))) + np.e + 20
-
-# domain: -32,32
-
-def from_unit_cube(x):
-    # for ackley blackbox function
-    return (x*64) - 32
 
 def get_initial_data(n, f, show_plot):
-    # generate init points
-    train_x_1 = torch.rand(9,2)
-    train_x_2 = torch.tensor([[0.5,0.5]])
-    train_x = torch.cat((train_x_1, train_x_2))
-    train_x = train_x_1
+    # get 10 random points of 5 dimensions (phi, chi, nnodes, ntasks, mem)
+    train_x = torch.rand(10,5)
+
+    # evaluate the black box function and cost function at the acquired points
+    train_y = evaluate_f(train_x, f)
+    train_y_cost = evaluate_cost(train_x)
     
-    train_x_real = from_unit_cube(train_x) # scale the points to the ackley function's domain
-    train_y = f(train_x_real[:,0], train_x_real[:,1]).unsqueeze(-1)
-    
-    best_y = train_y.min().item()
+    best_y = train_y.max().item() # needed for the expected imrpovement acq fn
 
     if show_plot:
-        plot_init_data(f, train_x_real, train_y)
+        plot_init_data(f, train_x_model_parameters, train_y)
 
-    return train_x, train_y, best_y
+    return train_x, train_y, best_y, train_y_cost
     
-def evaluate_candidates(candidates, f):
-    candidates_x_denormalized = from_unit_cube(candidates[:,0])
-    candidates_y_denormalized = from_unit_cube(candidates[:,1])
-    evaluation = f(candidates_x_denormalized, candidates_y_denormalized).unsqueeze(-1)
+def evaluate_f(candidates, f):
+    # de-normalize the acquired point
+    candidates_denormalized = from_n_unit_cube(candidates)
+    # extract only the model parameters
+    candidates_denormalized_model_parameters = get_model_parameters(candidates_denormalized)
+    evaluation = f(candidates_denormalized_model_parameters).unsqueeze(-1)
     return evaluation
 
+def evaluate_cost(candidates):
+    # de-normalize the acquired point
+    candidates_denormalized = from_n_unit_cube(candidates)
+    return cost(candidates_denormalized)
+
 def init_gp_model(train_x, train_y):
+    # extract only the model parameters
+    train_x = get_model_parameters(train_x)
+    
+    # covariance kernel
     covar_module = ScaleKernel(  # Use the same lengthscale prior as in the TuRBO paper
         MaternKernel(nu=2.5, ard_num_dims=2)
     )
+
+    # init the the surrogate model 
     single_model = SingleTaskGP(
                     train_x, 
                     train_y, 
@@ -68,7 +73,7 @@ def init_gp_model(train_x, train_y):
     return single_model, mll
 
 def init_acq_func(model, best_y):
-    ei = qExpectedImprovement(
+    ei = ExpectedImprovement(
         model=model,
         best_f=best_y)
     return ei
@@ -85,13 +90,16 @@ def gen_candidates(n, acq_func):
     
     return candidates
 
-def plot_init_data(f):
+def plot_init_data(f, train_x_model_parameters, train_y):
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
 
     x = np.linspace(-32,32,100)
     y = np.linspace(-32,32,100)
     x_ids, y_ids = np.meshgrid(x,y)
-    result = f(x_ids,y_ids)
+    f_input_vector = np.stack((x_ids, y_ids), axis=-1).reshape((100*100, 2))
+
+    result = f(f_input_vector).reshape([100,100])
     ax.plot_surface(x_ids, y_ids, result, color="grey", alpha=0.05)
-    ax.scatter(train_x_real[:,0], train_x_real[:,1], train_y, c='blue')
+    ax.scatter(train_x_model_parameters[:,0], train_x_model_parameters[:,1], train_y, c='blue')
+

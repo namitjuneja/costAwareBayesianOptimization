@@ -1,0 +1,11 @@
+Convert the cost model gp regression from functional to object oriented
+
+the evaluate_f and evaluate_cost return singletons of different shapes [n,1] and [n] respectively
+this is because i think botorh gp and gpytorch gp takes input in different formats. fix this later
+
+
+
+cost model debugging thoughts
+
+the cost model designed is not very good. it monotonically increases with nnodes
+but what about others 
